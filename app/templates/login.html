@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block title %}Entrar · Monitor de Backups{% endblock %}
+{% block content %}
+<div class="login-wrap" style="position:fixed;inset:0;overflow:auto">
+<div class="login">
+  <div class="brand"><span class="logo">{{ ic('shield') }}</span><span><b>Veeam Backup Monitor</b><small>Monitoramento de backups</small></span></div>
+  {% if flash %}<div class="flash {{ flash.kind }}">{{ ic('alert') }} {{ flash.msg }}</div>{% endif %}
+  <div class="box">
+    {% if not has_users %}
+    <p style="margin-top:0"><b>Nenhum usuário cadastrado.</b> No servidor, rode:</p>
+    <p class="mono">python manage.py criar-usuario admin --admin</p>
+    {% else %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="u">Usuário</label><input id="u" name="username" autofocus autocomplete="username">
+      <label for="p">Senha</label><input id="p" name="password" type="password" autocomplete="current-password">
+      <button>Entrar</button>
+    </form>
+    {% endif %}
+  </div>
+</div></div>
+{% endblock %}

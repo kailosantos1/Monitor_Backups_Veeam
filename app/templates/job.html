@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic, badge %}
+{% block autorefresh %}1{% endblock %}
+{% block content %}
+<a href="/jobs" class="crumb">{{ ic('back') }} Jobs</a>
+<h1 class="title">{{ job.name }}
+  {% if job.disabled %}<span class="pill st-desativado"><span class="dot"></span>Desativado</span>
+  {% elif job.running %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução{% if job.running_progress %} {{ job.running_progress }}%{% endif %}</span>{% endif %}</h1>
+
+<div class="facts">
+  <div><span>Último resultado</span><b>{% if job.last_result %}<span class="r-{{ job.last_result }}">{{ job.last_result|res }}</span> <small>{{ job.last_end|age }}</small>{% else %}—{% endif %}</b></div>
+  <div><span>Agendamento</span><b>{{ job.schedule }}</b></div>
+  <div><span>Próxima execução</span><b>{{ job.next_run|dt if job.next_run else ('após o job anterior' if 'Após' in job.schedule else '—') }}</b></div>
+  <div><span>Repositório</span><b>{{ job.repository or '—' }}</b></div>
+</div>
+
+{% if job.last_result in ('Failed','Warning') and job.last_message %}
+<div class="note {{ 'bad' if job.last_result == 'Failed' else 'warn' }}">{{ ic('alert') }}<div>{{ job.last_message }}</div></div>
+{% endif %}
+
+<h2>Máquinas <span class="count">{{ rows|length }}</span>{% if job.containers %} <span class="muted small" style="font-weight:400">inclui {{ job.containers|join(', ') }}</span>{% endif %}</h2>
+<div class="grp open"><div class="gb"><table>
+<tbody>{% for r in rows %}
+<tr onclick="location.href='/objeto?key={{ r.key|q }}'">
+  <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução</span>{% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ UI[r.status.code]|lower }}</small>{% endif %}{% else %}{{ badge(r.status.code, UI[r.status.code]) }}{% endif %}</td>
+  <td class="c-name"><a href="/objeto?key={{ r.key|q }}">{{ r.obj.name }}</a><small>{{ r.obj.host }}{% if not r.obj.in_definition and not r.obj.job_has_containers %} · fora da definição do job{% endif %}</small></td>
+  <td class="c-when">{% if r.obj.last_rp_at %}{{ r.obj.last_rp_at|age }}<small>{{ r.obj.last_rp_at|dt }}</small>{% else %}<b class="none">nunca</b>{% endif %}</td>
+  <td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>
+</tr>
+{% endfor %}</tbody></table></div></div>
+
+<h2>Histórico de execuções</h2>
+<div class="grp open"><div class="gb"><table class="list">
+<thead><tr><th>Resultado</th><th>Início</th><th>Duração</th><th>Mensagem</th></tr></thead>
+<tbody>{% for s in sessions %}
+{% set res = (s.result or {}).result %}
+<tr class="nolink">
+  <td class="c-st">{% if s.state != 'Stopped' %}<span class="pill st-executando">{{ ic('loader','spin') }}{{ s.progressPercent }}%</span>
+    {% elif res == 'Success' %}<span class="pill st-ok"><span class="dot"></span>Sucesso</span>{% elif res == 'Warning' %}<span class="pill st-alerta"><span class="dot"></span>Alerta</span>
+    {% else %}<span class="pill st-falha"><span class="dot"></span>Falha</span>{% endif %}</td>
+  <td class="c-when">{{ s.creationTime|vdt }}</td>
+  <td class="c-when small">{{ s|duration }}</td>
+  <td class="c-why" title="{{ (s.result or {}).message }}">{{ (s.result or {}).message if res != 'Success' }}{% if (s.result or {}).isCanceled %} (cancelada){% endif %}</td>
+</tr>
+{% endfor %}</tbody></table></div></div>
+
+{% if user.role == 'admin' %}
+<details class="edit" style="margin-top:20px"{{ ' open' if jm.client or jm.rpo_hours }}>
+  <summary>Editar cliente ou RPO deste job</summary>
+  <form method="post" action="/job/meta" class="box"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="job_id" value="{{ job.job_id }}">
+  <dl class="kv" style="align-items:start">
+    <dt>Cliente</dt><dd><input name="client" value="{{ jm.client or '' }}" placeholder="automático pelas regras"></dd>
+    <dt>RPO (horas)</dt><dd><input name="rpo_hours" value="{{ jm.rpo_hours or '' }}" size="6" placeholder="{{ settings.rpo_vm_hours|round|int }}"> <span class="small muted">idade máxima do último ponto para todas as máquinas deste job</span></dd>
+  </dl><p style="margin-bottom:0"><button>Salvar</button></p></form>
+</details>
+{% endif %}
+{% endblock %}

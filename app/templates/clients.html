@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic %}
+{% block content %}
+<div class="hero">
+  <h1>Clientes</h1>
+  <p>Cada máquina vai para o cliente cujo texto aparece no nome do job ou da máquina. Se dois textos servirem, vence o mais específico (o mais longo).</p>
+</div>
+
+<form method="post" class="addrule">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="add">
+  <input id="r-pattern" name="pattern" placeholder="Texto no nome, ex.: ronnau" required>
+  <input name="client" list="clientes" placeholder="Cliente" required>
+  <datalist id="clientes">{% for c in by_client %}<option value="{{ c }}">{% endfor %}</datalist>
+  <button>Adicionar</button>
+</form>
+
+<div class="grid2" style="align-items:start">
+<div class="grp open"><div class="gb"><table class="list">
+<thead><tr><th>Cliente</th><th>Textos que identificam</th><th style="text-align:right">Máquinas</th></tr></thead>
+<tbody>{% for client, rules in by_client.items() %}
+<tr class="nolink"><td><b>{{ client }}</b></td>
+<td>{% for r in rules %}<form method="post" class="chip"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="rule_id" value="{{ r.id }}">{{ r.pattern }}<button title="Remover &quot;{{ r.pattern }}&quot;">×</button></form>{% endfor %}</td>
+<td style="text-align:right" class="muted">{{ machines.get(client, 0) }}</td></tr>
+{% endfor %}</tbody></table></div></div>
+
+<div class="box">
+  <h3>Sem cliente <span class="count">{{ unmatched|length }}</span></h3>
+  {% if unmatched %}
+  <p class="small muted" style="margin-top:0">Clique num nome para usá-lo como texto da regra.</p>
+  <div class="unm">{% for u in unmatched %}<button type="button" class="sec sm" onclick="document.getElementById('r-pattern').value=this.textContent.trim().toLowerCase();document.querySelector('.addrule [name=client]').focus()">{{ u }}</button>{% endfor %}</div>
+  {% else %}<p class="small muted" style="margin:0">Todas as máquinas têm cliente.</p>{% endif %}
+</div>
+</div>
+{% endblock %}

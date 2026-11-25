@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic, badge %}
+{% block content %}
+<div class="phead"><div><h1>Infraestrutura do Veeam</h1><p>Backup de configuração, repositórios e servidores gerenciados.</p></div></div>
+{% set errs = infra.aux_errors or {} %}
+
+<h2>Backup da configuração do Veeam</h2>
+{% set cfg = infra.config_backup or [] %}
+{% if cfg %}
+<div class="box">
+  {% set c0 = cfg[0] %}
+  Última execução: <span class="r-{{ c0.result }}">{{ c0.result|res }}</span> em {{ c0.ended|dt }} {% if c0.message and c0.result != 'Success' %}— {{ c0.message }}{% endif %}
+  {% if c0.result == 'Failed' %}<p><b style="color:var(--falha)">O backup da configuração do próprio Veeam falhou. Sem ele, reinstalar o servidor de backup significa reconfigurar tudo à mão.</b></p>{% endif %}
+</div>
+<div class="tbl"><table><thead><tr><th>Início</th><th>Fim</th><th>Resultado</th><th>Mensagem</th></tr></thead>
+<tbody>{% for c in cfg %}<tr><td>{{ c.created|dt }}</td><td>{{ c.ended|dt }}</td><td><span class="r-{{ c.result }}">{{ c.result|res }}</span></td><td class="msg">{{ c.message }}</td></tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="muted">Nenhuma sessão de backup de configuração no período de histórico.</p>{% endif %}
+
+<h2>Repositórios</h2>
+{% if errs.repositories %}<div class="flash erro">Não foi possível ler os repositórios: {{ errs.repositories }}</div>{% endif %}
+{% if infra.repositories %}
+<div class="tbl"><table><thead><tr><th>Nome</th><th>Online</th><th>Tipo</th><th>Host / caminho</th><th>Capacidade</th><th>Livre</th><th>% livre</th></tr></thead>
+<tbody>{% for r in infra.repositories|sort(attribute='name') %}
+{% set cap = r.capacityGB %}{% set free = r.freeGB %}
+{% set pct = (free / cap * 100) if (cap and free is not none and cap > 0) else none %}
+<tr><td>{{ r.name }}</td><td>{% if r.isOnline is sameas false %}<span class="r-Failed">OFFLINE</span>{% elif r.isOnline %}sim{% else %}—{% endif %}</td><td>{{ r.type }}</td><td class="small">{{ r.hostName }} {{ r.path }}</td>
+<td>{{ '%.0f GB'|format(cap) if cap is not none else '—' }}</td><td>{{ '%.0f GB'|format(free) if free is not none else '—' }}</td>
+<td>{% if pct is not none %}<span class="{{ 'r-Failed' if pct < 10 else ('r-Warning' if pct < 20 else '') }}">{{ '%.1f'|format(pct) }}%</span>{% else %}—{% endif %}</td></tr>
+{% endfor %}</tbody></table></div>
+{% elif not errs.repositories %}<p class="muted">Nenhum repositório retornado.</p>{% endif %}
+
+<h2>Servidores gerenciados</h2>
+{% if errs.managed_servers %}<div class="flash erro">Não foi possível ler os servidores gerenciados: {{ errs.managed_servers }}</div>{% endif %}
+{% if infra.managed_servers %}
+<div class="tbl"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Descrição</th></tr></thead>
+<tbody>{% for m in infra.managed_servers|sort(attribute='name') %}
+<tr><td>{{ m.name }}</td><td>{{ m.viHostType or m.type }}</td><td>{% if m.status == 'Available' %}<span class="r-Success">Disponível</span>{% else %}<span class="r-Failed">{{ m.status }}</span>{% endif %}</td><td class="small muted">{{ '' if (m.description or '').startswith('Created by') else m.description }}</td></tr>
+{% endfor %}</tbody></table></div>
+{% endif %}
+<p class="small muted">Estes dados são auxiliares: se não puderem ser lidos, o status dos backups no painel continua válido.</p>
+{% endblock %}

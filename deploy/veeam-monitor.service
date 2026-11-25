@@ -1,0 +1,16 @@
+# Linux (systemd): copie para /etc/systemd/system/ e ajuste os caminhos/usuário.
+#   sudo systemctl daemon-reload && sudo systemctl enable --now veeam-monitor
+[Unit]
+Description=Monitor de Backups Veeam
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=veeammon
+WorkingDirectory=/opt/veeam-monitor
+ExecStart=/opt/veeam-monitor/.venv/bin/python manage.py servir
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

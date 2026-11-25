@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic, badge %}
+{% block autorefresh %}1{% endblock %}
+{% block content %}
+{% macro job_badge(j) -%}
+{% if j.disabled %}<span class="pill st-desativado"><span class="dot"></span>Desativado</span>
+{% elif j.running %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução{% if j.running_progress %} {{ j.running_progress }}%{% endif %}</span>
+{% elif j.last_result == 'Failed' %}<span class="pill st-falha"><span class="dot"></span>Falha</span>
+{% elif j.last_result == 'Warning' %}<span class="pill st-alerta"><span class="dot"></span>Alerta</span>
+{% elif j.last_result == 'Success' %}<span class="pill st-ok"><span class="dot"></span>Sucesso</span>
+{% else %}<span class="pill st-ignorado"><span class="dot"></span>Sem execução</span>{% endif %}
+{%- endmacro %}
+
+<div class="hero">
+  <h1>Jobs <span class="count">{{ jobs|length }}</span></h1>
+  <p>Mesma lista do console do Veeam (Home › Jobs). Clique num job para ver as máquinas e o histórico.</p>
+</div>
+
+<div class="grp open"><div class="gb"><table class="list">
+<thead><tr><th>Status</th><th>Job</th><th>Última execução</th><th>Próxima</th><th>Máquinas</th></tr></thead>
+<tbody>
+{% for j in jobs %}
+{% set pc = per_job[j.job_id] %}
+{% set nprob = pc['sem_backup'] + pc['falha'] + pc['alerta'] + pc['desativado'] %}
+<tr onclick="location.href='/job?id={{ j.job_id|q }}'">
+  <td class="c-st">{{ job_badge(j) }}{% if j.running and j.last_result in ('Failed','Warning') %}<small class="under st-t-{{ 'falha' if j.last_result == 'Failed' else 'alerta' }}">anterior: {{ j.last_result|res|lower }}</small>{% endif %}</td>
+  <td class="c-name"><a href="/job?id={{ j.job_id|q }}">{{ j.name }}</a><small>{{ j.schedule }}</small></td>
+  <td class="c-when">{% if j.last_end %}{{ j.last_end|age }}<small>{{ j.last_end|dt }}</small>{% else %}<span class="muted">—</span>{% endif %}</td>
+  <td class="c-when">{% if j.next_run %}{{ j.next_run|dt }}{% elif 'Após' in j.schedule %}<span class="muted small">após o job anterior</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+  <td class="nowrap small">{% if nprob %}<b style="color:var(--ro600)">{{ nprob }}</b> de {{ pc.values()|sum }} com problema{% elif pc.values()|sum %}<span style="color:var(--em700)">{{ pc.values()|sum }} em dia</span>{% else %}<span class="muted">nenhuma</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

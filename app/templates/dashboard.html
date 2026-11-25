@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic, badge %}
+{% block autorefresh %}1{% endblock %}
+{% block content %}
+{% set n_ok = counts.get('ok', 0) %}{% set n_run = rows|selectattr('status.active')|list|length + counts.get('executando', 0) %}{% set n_ign = counts.get('ignorado', 0) %}
+
+<div class="hero">
+  {% if problems %}
+  <h1><span class="big bad">{{ problems|length }}</span> {{ 'máquina precisa' if problems|length == 1 else 'máquinas precisam' }} de atenção</h1>
+  <p>{% for code in ['sem_backup','falha','alerta','desativado'] if counts.get(code) %}{{ counts[code] }} {{ {'sem_backup':'sem backup','falha':'com falha','alerta':'com alerta','desativado':'em job desativado'}[code] }}{{ ', ' if not loop.last }}{% endfor %}{% if n_run %} · {{ n_run }} em execução{% endif %} · {{ n_ok }} em dia</p>
+  {% else %}
+  <h1><span class="big good">{{ ic('check') }}</span> Todos os backups em dia</h1>
+  <p>{{ n_ok }} máquinas com ponto recente e sem falha{% if n_run %} · {{ n_run }} em execução{% endif %}.</p>
+  {% endif %}
+</div>
+
+{% if infra_alerts %}
+<div class="note bad">{{ ic('alert') }}<div>{% for a in infra_alerts %}{{ a }}{% if not loop.last %}<br>{% endif %}{% endfor %} · <a href="/infra">infraestrutura</a></div></div>
+{% endif %}
+
+<div class="toolbar">
+  <div class="tabs" id="f-status">
+    <button type="button" data-filter="todos">Tudo <span>{{ rows|length }}</span></button>
+    <button type="button" data-filter="problemas">Atenção <span>{{ problems|length }}</span></button>
+    {% if n_run %}<button type="button" data-filter="executando">Em execução <span>{{ n_run }}</span></button>{% endif %}
+    <button type="button" data-filter="ok">Em dia <span>{{ n_ok }}</span></button>
+    {% if n_ign %}<button type="button" data-filter="ignorado">Ignorados <span>{{ n_ign }}</span></button>{% endif %}
+  </div>
+  <div class="search">{{ ic('search') }}<input id="f-q" placeholder="Buscar máquina, job ou cliente"></div>
+  <select id="f-client"><option value="">Todos os clientes</option>{% for c in clients %}<option>{{ c }}</option>{% endfor %}</select>
+</div>
+
+<div class="groups" id="objs">
+{% for client in clients %}
+  {% set bc = by_client[client] %}
+  {% set nprob = bc['sem_backup'] + bc['falha'] + bc['alerta'] + bc['desativado'] %}
+  <section class="grp" data-client="{{ client }}">
+    <div class="gh">
+      <span class="chev">{{ ic('chevron') }}</span>
+      <h3>{{ client }}</h3>
+      {% set nrun = sections[client]|map(attribute='rows')|sum(start=[])|selectattr('status.active')|list|length + bc['executando'] %}
+      <span class="gcount">{% if nrun %}<span class="run">{{ ic('loader','spin') }} {{ nrun }} em execução</span> · {% endif %}{% if nprob %}<b>{{ nprob }}</b> de {{ bc.values()|sum }} com problema{% elif bc['ok'] %}{{ bc['ok'] }} em dia{% else %}{{ bc.values()|sum }} {{ 'máquina' if bc.values()|sum == 1 else 'máquinas' }}{% endif %}</span>
+    </div>
+    <div class="gb">
+      <table>
+      {% for sec in sections[client] %}
+        <tbody class="sec">
+        <tr class="sub"><td colspan="4">{{ ic('monitor' if sec.kind == 'agent' else ('db' if sec.kind == 'orphan' else 'server')) }}
+          {% if sec.kind == 'esxi' and sec.host %}ESXi <span class="hostchip">{{ sec.host }}</span>{% else %}{{ sec.title }}{% endif %}
+          <span>{{ sec.rows|length }} {{ ('agente' if sec.rows|length == 1 else 'agentes') if sec.kind == 'agent' else ('máquina' if sec.rows|length == 1 else 'máquinas') }}</span></td></tr>
+        {% for r in sec.rows %}
+        <tr data-status="{{ r.status.code }}" data-problem="{{ 1 if r.status.is_problem else 0 }}" data-client="{{ r.client }}"
+            data-run="{{ 1 if r.status.active or r.status.code == 'executando' else 0 }}"
+            data-search="{{ (r.obj.name ~ ' ' ~ r.obj.job_name ~ ' ' ~ r.obj.host ~ ' ' ~ r.client)|lower }}"
+            onclick="location.href='/objeto?key={{ r.key|q }}'">
+          <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução</span>
+              {% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ UI[r.status.code]|lower }}</small>{% endif %}
+            {% else %}{{ badge(r.status.code, UI[r.status.code]) }}{% endif %}</td>
+          <td class="c-name"><a href="/objeto?key={{ r.key|q }}">{{ r.obj.name }}</a>
+            <small>{{ r.obj.job_name }}</small></td>
+          <td class="c-when">{% if r.obj.last_rp_at %}{{ r.obj.last_rp_at|age }}<small>{{ r.obj.last_rp_at|dt }}</small>{% else %}<b class="none">nunca</b>{% endif %}</td>
+          <td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      {% endfor %}
+      </table>
+    </div>
+  </section>
+{% endfor %}
+</div>
+<div id="f-empty" class="empty hide">{{ ic('check') }}<p>Nada por aqui.</p></div>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "_icons.html" import ic, badge %}
+{% block title %}{{ o.name }} — Monitor de Backups{% endblock %}
+{% block content %}
+<a href="/" class="crumb">{{ ic('back') }} Painel</a>{% if job %} <span class="muted small">/</span> <a href="/job?id={{ job.job_id|q }}" class="crumb">Job {{ job.name }}</a>{% endif %}
+<h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{{ o.name }}
+  {% if st.active or st.code == 'executando' %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução</span>{% if st.is_problem %} {{ badge(st.code, UI[st.code]) }}{% endif %}{% else %}{{ badge(st.code, UI[st.code]) }}{% endif %}
+  {% if not (st.active or st.code == 'executando') and o.job_running %}<span class="b b-run">job em execução{% if o.running_progress %} {{ o.running_progress }}%{% endif %}</span>{% endif %}</h1>
+
+<div class="box why st-b-{{ st.code }}">
+  <h3>Por que este status</h3>
+  <ul class="reasons">{% for r in st.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+</div>
+
+<div class="box">
+  <dl class="kv">
+    <dt>Tipo</dt><dd>{{ KIND_LABEL.get(o.kind, o.kind) }}{% if o.platform %} ({{ o.platform }}){% endif %}</dd>
+    <dt>Cliente</dt><dd>{{ client }} {% if client_source %}<span class="muted small">({{ client_source }})</span>{% endif %}</dd>
+    <dt>{{ 'Job' if o.key.startswith('job:') else 'Backup' }}</dt><dd>{{ o.job_name }}</dd>
+    {% if o.host %}<dt>Host</dt><dd>{{ o.host }}</dd>{% endif %}
+    {% if o.size %}<dt>Tamanho (Veeam)</dt><dd>{{ o.size }}</dd>{% endif %}
+    {% if o.key.startswith('job:') %}<dt>Na definição do job</dt><dd>{{ 'sim' if o.in_definition else ('via ' ~ (job.containers|join(', ') if job else 'container') if o.job_has_containers else 'não') }}</dd>{% endif %}
+    <dt>Último ponto</dt><dd>{{ o.last_rp_at|dt(True) }} {% if o.last_rp_type %}({{ o.last_rp_type }}){% endif %} {% if o.last_rp_malware %}· malware: {{ o.last_rp_malware }}{% endif %}</dd>
+    <dt>Pontos existentes</dt><dd>{{ o.rp_count }}{% if o.oldest_rp_at %} (mais antigo {{ o.oldest_rp_at|dt }}){% endif %}</dd>
+    <dt>Último resultado</dt><dd>{% if o.last_result %}<span class="r-{{ o.last_result }}">{{ o.last_result|res }}</span> em {{ o.last_result_at|dt(True) }} <span class="muted small">({{ o.last_result_source }})</span>{% else %}—{% endif %}</dd>
+    <dt>Último sucesso</dt><dd>{{ o.last_success_at|dt }}</dd>
+    <dt>RPO</dt><dd>{{ st.rpo_hours|round(1) }} h <span class="muted small">({{ st.rpo_source }})</span></dd>
+  </dl>
+  {% if meta.note %}<p><b>Observação:</b> {{ meta.note }}</p>{% endif %}
+</div>
+
+{% if user.role == 'admin' %}
+<details class="edit"{{ ' open' if meta.ignored or meta.client or meta.rpo_hours or meta.note }}>
+  <summary>Editar cliente, RPO ou ignorar</summary>
+  <form method="post" action="/objeto/meta" class="box">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="key" value="{{ o.key }}">
+    <dl class="kv" style="align-items:start">
+      <dt>Cliente</dt><dd><input name="client" value="{{ meta.client or '' }}" placeholder="{{ client }}"></dd>
+      <dt>RPO (horas)</dt><dd><input name="rpo_hours" value="{{ meta.rpo_hours or '' }}" size="6" placeholder="{{ st.rpo_hours|round|int }}"> <span class="small muted">idade máxima aceitável do último ponto</span></dd>
+      <dt>Observação</dt><dd><textarea name="note">{{ meta.note or '' }}</textarea></dd>
+      <dt>Ignorar</dt><dd><label><input type="checkbox" name="ignored" value="1" {{ 'checked' if meta.ignored }}>não alertar sobre esta máquina</label><br>
+        <input name="ignored_reason" value="{{ meta.ignored_reason or '' }}" size="44" placeholder="motivo (obrigatório), ex.: máquina desligada" style="margin-top:6px">
+        {% if meta.ignored %}<br><span class="small muted">ignorado por {{ meta.ignored_by }} em {{ meta.ignored_at|dt }}</span>{% endif %}</dd>
+    </dl>
+    <p style="margin-bottom:0"><button>Salvar</button></p>
+  </form>
+</details>
+{% endif %}
+
+{% if tasks %}
+<h2>Histórico de execuções desta máquina no job</h2>
+<div class="tbl"><table>
+<thead><tr><th>Início</th><th>Fim</th><th>Resultado</th><th>Mensagem do Veeam</th><th>Sessão do job</th></tr></thead>
+<tbody>
+{% for t in tasks %}
+<tr><td class="nowrap">{{ t.task.creationTime|vdt }}</td><td class="nowrap">{{ t.task.endTime|vdt if (t.task.endTime or '')[:4] != '1900' else '—' }}</td>
+<td>{% set rr = (t.task.result or {}).result %}{% if rr in ('Success','Warning','Failed') %}<span class="r-{{ rr }}">{{ rr|res }}</span>{% else %}<span class="b b-run">{{ t.task.state }}</span>{% endif %}</td>
+<td class="msg">{{ (t.task.result or {}).message }}</td>
+<td class="small muted">{{ t.session.creationTime|vdt }} · {{ (t.session.result or {}).result|res }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% elif o.key.startswith('job:') %}
+<p class="muted">Nenhuma task session registrada para esta máquina no histórico.</p>
+{% endif %}
+
+<h2>Pontos de restauração existentes no Veeam ({{ rps|length }}{% if o.rp_count > rps|length %} de {{ o.rp_count }}{% endif %})</h2>
+{% if rps %}
+<div class="tbl"><table>
+<thead><tr><th>Criado em</th><th>Tipo</th><th>Malware</th></tr></thead>
+<tbody>{% for rp in rps %}<tr><td>{{ rp.creationTime|vdt }}</td><td>{{ rp.type }}</td><td>{{ rp.malwareStatus }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p><b style="color:var(--sem)">Nenhum ponto de restauração existe para esta máquina.</b></p>{% endif %}
+{% endblock %}
