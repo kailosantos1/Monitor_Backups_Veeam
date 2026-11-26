@@ -7,7 +7,7 @@
 <div class="hero">
   {% if problems %}
   <h1><span class="big bad">{{ problems|length }}</span> {{ 'máquina precisa' if problems|length == 1 else 'máquinas precisam' }} de atenção</h1>
-  <p>{% for code in ['sem_backup','falha','alerta','desativado'] if counts.get(code) %}{{ counts[code] }} {{ {'sem_backup':'sem backup','falha':'com falha','alerta':'com alerta','desativado':'em job desativado'}[code] }}{{ ', ' if not loop.last }}{% endfor %}{% if n_run %} · {{ n_run }} em execução{% endif %} · {{ n_ok }} em dia</p>
+  <p>{% set n_never = rows|selectattr('status.never')|list|length %}{% set parts = [] %}{% if n_never %}{% set _ = parts.append(n_never ~ (' nunca teve backup' if n_never == 1 else ' nunca tiveram backup')) %}{% endif %}{% if counts.get('sem_backup', 0) - n_never %}{% set _ = parts.append((counts['sem_backup'] - n_never) ~ (' parada' if counts['sem_backup'] - n_never == 1 else ' paradas')) %}{% endif %}{% for code in ['falha','atrasado','alerta','desativado'] if counts.get(code) %}{% set _ = parts.append(counts[code] ~ ' ' ~ {'falha':'com falha','atrasado':'atrasadas','alerta':'com alerta','desativado':'em job desativado'}[code]) %}{% endfor %}{{ parts|join(', ') }}{% if n_run %} · {{ n_run }} em execução{% endif %} · {{ n_ok }} em dia</p>
   {% else %}
   <h1><span class="big good">{{ ic('check') }}</span> Todos os backups em dia</h1>
   <p>{{ n_ok }} máquinas com ponto recente e sem falha{% if n_run %} · {{ n_run }} em execução{% endif %}.</p>
@@ -33,7 +33,7 @@
 <div class="groups" id="objs">
 {% for client in clients %}
   {% set bc = by_client[client] %}
-  {% set nprob = bc['sem_backup'] + bc['falha'] + bc['alerta'] + bc['desativado'] %}
+  {% set nprob = bc['sem_backup'] + bc['falha'] + bc['atrasado'] + bc['alerta'] + bc['desativado'] %}
   <section class="grp" data-client="{{ client }}">
     <div class="gh">
       <span class="chev">{{ ic('chevron') }}</span>
@@ -53,13 +53,14 @@
             data-run="{{ 1 if r.status.active or r.status.code == 'executando' else 0 }}"
             data-search="{{ (r.obj.name ~ ' ' ~ r.obj.job_name ~ ' ' ~ r.obj.host ~ ' ' ~ r.client)|lower }}"
             onclick="location.href='/objeto?key={{ r.key|q }}'">
-          <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução</span>
-              {% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ UI[r.status.code]|lower }}</small>{% endif %}
-            {% else %}{{ badge(r.status.code, UI[r.status.code]) }}{% endif %}</td>
+          <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando" title="Progresso do job no Veeam">{{ ic('loader','spin') }}Em execução{% if r.obj.running_progress is not none %} {{ r.obj.running_progress }}%{% endif %}</span>
+              {% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ r.status.ui|lower }}</small>{% endif %}
+            {% else %}{{ badge(r.status.code, r.status.ui) }}{% endif %}</td>
           <td class="c-name"><a href="/objeto?key={{ r.key|q }}">{{ r.obj.name }}</a>
             <small>{{ r.obj.job_name }}</small></td>
-          <td class="c-when">{% if r.obj.last_rp_at %}{{ r.obj.last_rp_at|age }}<small>{{ r.obj.last_rp_at|dt }}</small>{% else %}<b class="none">nunca</b>{% endif %}</td>
-          <td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>
+          {% set lb = r.obj.last_rp_at %}<td class="c-when last">{% if lb %}Último backup {{ lb|age }}<small>{{ lb|dt }}</small>{% else %}<b class="none">Nunca teve backup</b>{% endif %}</td>
+          {% if r.status.active or r.status.code == 'executando' %}{% set ri = r.obj|runinfo %}<td class="c-why run" title="{{ ri }}">{{ ri }}</td>
+          {% else %}<td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>{% endif %}
         </tr>
         {% endfor %}
         </tbody>

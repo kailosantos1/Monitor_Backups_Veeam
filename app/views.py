@@ -67,7 +67,7 @@ def build_rows(db: Database, settings: Settings, now: datetime | None = None) ->
     for o in db.objects():
         m = metas.get(o["key"])
         jm = jmetas.get(o.get("job_id") or "")
-        st = compute(o, m, jm, now, settings.rpo_vm_hours, settings.rpo_agent_hours)
+        st = compute(o, m, jm, now, settings.sem_backup_days, settings.agent_interval_hours)
         client, csrc = resolve_client(o, m, jm, rules)
         rows.append(Row(obj=o, meta=m, status=st, client=client, client_source=csrc))
     rows.sort(key=lambda r: (r.status.rank, (r.status.rp_age_hours if r.status.rp_age_hours is not None else -1) if r.status.code == "sem_backup" else 0,

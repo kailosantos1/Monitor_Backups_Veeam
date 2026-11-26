@@ -1,19 +1,25 @@
 """Regra única de status, calculada na hora de exibir (com o relógio atual).
 
-Ordem de avaliação (a primeira que casar vence):
+O prazo de cada máquina vem do AGENDAMENTO do job no Veeam (diário, a cada
+N horas, dias selecionados, "após o job X"...). Ordem (a primeira que casar vence):
 
   1. IGNORADO    -> um admin marcou o objeto como ignorado (com motivo).
-  2. SEM BACKUP  -> não existe ponto de restauração, ou o mais novo é mais
-                    velho que o RPO do objeto. É o alarme principal: vale
-                    independentemente de qualquer resultado de sessão.
-  3. DESATIVADO  -> o job está desativado no Veeam (ainda dentro do RPO).
-  4. FALHA       -> último resultado Failed, ou o ponto mais novo foi
-                    marcado como Infected pelo Veeam.
-  5. ALERTA      -> último resultado Warning, sessão terminou sem resultado,
-                    ou ponto mais novo marcado como Suspicious.
-  6. OK          -> último resultado Success, ou agente com ponto recente
-                    (para Veeam Agent standalone a API não expõe sessões; a
-                    única evidência confiável é o ponto de restauração).
+  2. PARADO      -> o ponto mais novo é mais velho que o limite (padrão
+                    7 dias, ou 2x o
+                    intervalo do agendamento + 12 h, o que for maior).
+     NUNCA TEVE BACKUP -> não existe nenhum ponto (mesmo código interno).
+  3. EM EXECUÇÃO -> o Veeam está processando a máquina (ou ela está na fila
+                    de um retry) e ainda existe ponto bom dentro do limite.
+  4. DESATIVADO  -> o job está desativado no Veeam.
+  5. FALHA       -> último resultado Failed, ou ponto marcado como Infected.
+  6. ALERTA      -> último resultado Warning, sem resultado no histórico,
+                    ponto Suspicious ou ponto criado numa execução que falhou.
+  7. ATRASADO    -> o último resultado foi bom, mas o job perdeu o horário:
+                    não há ponto novo dentro do intervalo do agendamento
+                    + tolerância (máx(12 h, metade do intervalo)).
+  8. OK          -> resultado bom e ponto em dia com o agendamento.
+Agentes standalone não têm agendamento na API: usam um intervalo padrão
+configurável e são avaliados só pelo ponto de restauração.
 """
 from __future__ import annotations
 
@@ -22,17 +28,23 @@ from datetime import datetime
 
 from .timeutil import fmt_local, from_db
 
-ORDER = ["sem_backup", "falha", "alerta", "desativado", "executando", "ok", "ignorado"]
+ORDER = ["sem_backup", "falha", "atrasado", "alerta", "desativado", "executando", "ok", "ignorado"]
 LABELS = {
-    "sem_backup": "SEM BACKUP",
+    "sem_backup": "PARADO",
     "falha": "FALHA",
+    "atrasado": "ATRASADO",
     "alerta": "ALERTA",
     "desativado": "DESATIVADO",
     "executando": "EM EXECUÇÃO",
     "ok": "OK",
     "ignorado": "IGNORADO",
 }
-PROBLEM = {"sem_backup", "falha", "alerta", "desativado"}
+# Rótulos de tela. "sem_backup" tem dois nomes: "Nunca teve backup" quando não
+# existe ponto nenhum, e "Parado" quando já teve, mas não há ponto novo há dias.
+UI_LABEL = {"sem_backup": "Parado", "falha": "Falha", "atrasado": "Atrasado", "alerta": "Alerta",
+            "desativado": "Desativado", "executando": "Em execução", "ok": "OK", "ignorado": "Ignorado"}
+NEVER_LABEL = "Nunca teve backup"
+PROBLEM = {"sem_backup", "falha", "atrasado", "alerta", "desativado"}
 RESULT_PT = {"Success": "Sucesso", "Warning": "Alerta", "Failed": "Falha", "None": "Sem resultado"}
 
 
@@ -40,18 +52,25 @@ RESULT_PT = {"Success": "Sucesso", "Warning": "Alerta", "Failed": "Falha", "None
 class Status:
     code: str
     reasons: list[str] = field(default_factory=list)
-    rpo_hours: float = 0
-    rpo_source: str = ""
+    interval_hours: float | None = None   # de quanto em quanto tempo deveria haver ponto novo
+    interval_source: str = ""
+    late_hours: float | None = None       # passou disso sem ponto novo -> ATRASADO
+    sem_hours: float = 0                  # passou disso sem ponto novo -> SEM BACKUP
     rp_age_hours: float | None = None
     summary: str = ""
     # Veeam está trabalhando nesta máquina agora (processando, ou na fila de um
     # retry). Só muda a ETIQUETA exibida; o código acima continua valendo para
     # contagens e para a aba "Atenção".
     active: bool = False
+    never: bool = False                   # não existe nenhum ponto de restauração
 
     @property
     def label(self) -> str:
-        return LABELS[self.code]
+        return NEVER_LABEL.upper() if self.never and self.code == "sem_backup" else LABELS[self.code]
+
+    @property
+    def ui(self) -> str:
+        return NEVER_LABEL if self.never and self.code == "sem_backup" else UI_LABEL[self.code]
 
     @property
     def rank(self) -> int:
@@ -62,20 +81,31 @@ class Status:
         return self.code in PROBLEM
 
 
-def effective_rpo(obj: dict, meta: dict | None, job_meta: dict | None,
-                  rpo_vm: float, rpo_agent: float) -> tuple[float, str]:
+def expected_interval(obj: dict, meta: dict | None, job_meta: dict | None,
+                      agent_hours: float) -> tuple[float | None, str]:
+    """De quanto em quanto tempo esta máquina deveria ganhar ponto novo."""
     if meta and meta.get("rpo_hours"):
-        return float(meta["rpo_hours"]), "definido no objeto"
+        return float(meta["rpo_hours"]), "definido na máquina"
     if job_meta and job_meta.get("rpo_hours"):
         return float(job_meta["rpo_hours"]), "definido no job"
     if obj.get("kind") == "agent":
-        return rpo_agent, "padrão para agentes"
-    return rpo_vm, "padrão para VMs"
+        return agent_hours, "padrão para agentes (a API não informa o agendamento deles)"
+    if obj.get("expected_hours"):
+        return float(obj["expected_hours"]), f"agendamento do Veeam: {obj.get('schedule_source') or 'job'}"
+    return None, "sem agendamento automático"
+
+
+def limits(interval: float | None, sem_backup_days: float) -> tuple[float | None, float]:
+    sem_floor = sem_backup_days * 24
+    if not interval:
+        return None, sem_floor
+    late = interval + max(12.0, interval / 2)
+    return late, max(sem_floor, 2 * interval + 12)
 
 
 def compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
-            rpo_vm: float, rpo_agent: float) -> Status:
-    st = _compute(obj, meta, job_meta, now, rpo_vm, rpo_agent)
+            sem_backup_days: float, agent_hours: float) -> Status:
+    st = _compute(obj, meta, job_meta, now, sem_backup_days, agent_hours)
     if st.code != "ignorado":
         res_at = from_db(obj.get("last_result_at"))
         run_since = from_db(obj.get("job_running_since"))
@@ -86,9 +116,10 @@ def compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
 
 
 def _compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
-             rpo_vm: float, rpo_agent: float) -> Status:
-    rpo, rpo_src = effective_rpo(obj, meta, job_meta, rpo_vm, rpo_agent)
-    st = Status(code="ok", rpo_hours=rpo, rpo_source=rpo_src)
+             sem_backup_days: float, agent_hours: float) -> Status:
+    interval, src = expected_interval(obj, meta, job_meta, agent_hours)
+    late, sem = limits(interval, sem_backup_days)
+    st = Status(code="ok", interval_hours=interval, interval_source=src, late_hours=late, sem_hours=sem)
     r = st.reasons
 
     last_rp = from_db(obj.get("last_rp_at"))
@@ -124,31 +155,36 @@ def _compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
     if obj.get("kind") == "orphan":
         context.append("Backup sem job no Veeam (o job foi apagado); não recebe novos pontos.")
 
-    # 2. RPO
+    # 2. SEM BACKUP
     if last_rp is None:
         st.code = "sem_backup"
-        r.append("Não existe nenhum ponto de restauração para esta máquina no Veeam.")
-    elif st.rp_age_hours > rpo:
+        st.never = True
+        r.append("Não existe nenhum ponto de restauração para esta máquina no Veeam: ela nunca teve backup (ou todos foram apagados).")
+    elif st.rp_age_hours > sem:
         st.code = "sem_backup"
         r.append(f"Último ponto de restauração em {fmt_local(last_rp)} ({_h(st.rp_age_hours)} atrás); "
-                 f"o limite (RPO) é {_h(rpo)}.")
+                 f"o backup está PARADO (sem ponto novo por mais de {_h(sem)}).")
     if st.code == "sem_backup":
         if obj.get("running") or obj.get("job_running"):
-            r.append("O job está em execução agora, mas isso não muda o status: a máquina já passou do RPO sem ponto novo.")
-        # Resumo curto: só o que a coluna "último backup" ainda não diz.
+            r.append("O job está em execução agora, mas isso não muda o status: a máquina já passou do limite sem ponto novo.")
         if res in ("Failed", "Warning") and obj.get("last_message"):
             st.summary = obj["last_message"]
         elif context:
             st.summary = context[0]
         else:
             st.summary = ("Nenhum ponto de restauração" if last_rp is None
-                          else f"Passou do limite de {_h(rpo)}")
+                          else f"Mais de {_h(sem)} sem backup novo")
         if res_txt:
             r.append(res_txt)
         r.extend(context)
         return st
 
-    r.append(f"Último ponto de restauração em {fmt_local(last_rp)} ({_h(st.rp_age_hours)} atrás, RPO {_h(rpo)}).")
+    if interval:
+        r.append(f"Último ponto de restauração em {fmt_local(last_rp)} ({_h(st.rp_age_hours)} atrás). "
+                 f"Esperado: ponto novo a cada {_h(interval)} ({src}).")
+    else:
+        r.append(f"Último ponto de restauração em {fmt_local(last_rp)} ({_h(st.rp_age_hours)} atrás). "
+                 "O job não tem agendamento automático, então não há horário esperado.")
     if obj.get("last_rp_in_failed_run"):
         good = from_db(obj.get("last_good_rp_at"))
         r.append("ATENÇÃO: esse ponto foi criado durante uma execução desta máquina que FALHOU e pode estar "
@@ -166,16 +202,16 @@ def _compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
 
     # Em execução: a VM está sendo processada agora, ou está na fila do job que
     # está rodando e ainda não terminou nesta execução. Só chega aqui quem está
-    # DENTRO do RPO: execução que se arrasta sem gerar ponto já virou SEM BACKUP.
+    # dentro do limite: execução que se arrasta sem gerar ponto já virou SEM BACKUP.
     run_since = from_db(obj.get("job_running_since"))
     # "Na fila": só para quem não teve sucesso na última vez. Quem deu certo
     # continua OK (num retry o Veeam nem vai reprocessá-la).
     waiting = (bool(obj.get("job_running")) and obj.get("kind") == "vm" and res != "Success"
                and (res_at is None or (run_since and res_at < run_since)))
     # Se o ponto mais novo veio de uma execução que falhou, só mostramos
-    # "em execução" quando o último ponto BOM também está dentro do RPO.
+    # "em execução" quando o último ponto BOM também está dentro do limite.
     good = from_db(obj.get("last_good_rp_at")) if obj.get("last_rp_in_failed_run") else last_rp
-    good_ok = good is not None and (now - good).total_seconds() / 3600 <= rpo
+    good_ok = good is not None and (now - good).total_seconds() / 3600 <= sem
     if (obj.get("running") or waiting) and good_ok:
         st.code = "executando"
         prev = f"anterior: {RESULT_PT.get(res, res)} em {fmt_local(res_at)}" if res else "sem resultado anterior"
@@ -207,6 +243,16 @@ def _compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
         st.summary = obj.get("last_message") or next((x for x in r if "INFECT" in x or "SUSPEITO" in x or "Não há resultado" in x), "")
     if obj.get("last_rp_in_failed_run") and st.code == "ok":
         st.code = "alerta"
+    # 7. ATRASADO: resultado bom, mas o job perdeu o horário.
+    if late is not None and st.rp_age_hours > late:
+        msg = (f"Atrasado: o agendamento prevê ponto novo a cada {_h(interval)}, "
+               f"mas o último é de {_h(st.rp_age_hours)} atrás (tolerância {_h(late)}).")
+        r.append(msg)
+        if st.code == "ok":
+            st.code = "atrasado"
+            st.summary = f"Sem ponto novo há {_h(st.rp_age_hours)}; esperado a cada {_h(interval)}"
+            if obj.get("job_last_result") in ("Failed", "Warning") or obj.get("job_running"):
+                st.summary += " · " + ("job em execução" if obj.get("job_running") else "o job não concluiu")
     if res_txt:
         r.append(res_txt)
     elif obj.get("kind") == "agent":
@@ -219,4 +265,7 @@ def _compute(obj: dict, meta: dict | None, job_meta: dict | None, now: datetime,
 def _h(hours: float) -> str:
     if hours < 48:
         return f"{hours:.0f} h"
-    return f"{hours / 24:.1f} dias".replace(".", ",")
+    d = hours / 24
+    if abs(d - round(d)) < 0.05:
+        return f"{round(d)} dias"
+    return f"{d:.1f} dias".replace(".", ",")

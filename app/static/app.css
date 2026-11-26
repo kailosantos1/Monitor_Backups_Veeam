@@ -222,3 +222,8 @@ form.chip button{background:none;box-shadow:none;border:0;color:var(--s400);padd
 form.chip button:hover{color:var(--ro600);background:none}
 .unm{display:flex;flex-wrap:wrap;gap:6px}
 .box h3 .count{margin-left:6px}
+.c-why.run{color:var(--bl800)}
+.c-st{width:160px}
+.st-atrasado{background:var(--or50);border-color:var(--or200);color:var(--or800)}.st-atrasado .dot{background:var(--or500)}
+.st-t-atrasado{color:var(--or700)}.b-atrasado{background:var(--or50);border-color:var(--or200);color:var(--or800)}
+.c-when.last{width:210px}

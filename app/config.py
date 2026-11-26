@@ -65,8 +65,10 @@ class Settings:
     sync_interval_minutes: int
     history_days: int
 
-    rpo_vm_hours: float
-    rpo_agent_hours: float
+    # Sem ponto novo por mais que isso (ou 2x o intervalo do agendamento) = SEM BACKUP.
+    sem_backup_days: float
+    # Agentes standalone não informam agendamento na API: intervalo esperado padrão.
+    agent_interval_hours: float
 
     @property
     def stale_after_minutes(self) -> int:
@@ -127,6 +129,6 @@ def load_settings(env_file: Path | None = None) -> Settings:
         replay_dir=replay_dir,
         sync_interval_minutes=_num("SYNC_INTERVAL_MINUTES", 10, 2, int),
         history_days=_num("HISTORY_DAYS", 30, 2, int),
-        rpo_vm_hours=_num("RPO_VM_HOURS", 36, 1),
-        rpo_agent_hours=_num("RPO_AGENT_HOURS", 72, 1),
+        sem_backup_days=_num("SEM_BACKUP_DAYS", 7, 1),
+        agent_interval_hours=_num("AGENT_INTERVAL_HOURS", 48, 1),
     )

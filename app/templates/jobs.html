@@ -21,7 +21,7 @@
 <tbody>
 {% for j in jobs %}
 {% set pc = per_job[j.job_id] %}
-{% set nprob = pc['sem_backup'] + pc['falha'] + pc['alerta'] + pc['desativado'] %}
+{% set nprob = pc['sem_backup'] + pc['falha'] + pc['atrasado'] + pc['alerta'] + pc['desativado'] %}
 <tr onclick="location.href='/job?id={{ j.job_id|q }}'">
   <td class="c-st">{{ job_badge(j) }}{% if j.running and j.last_result in ('Failed','Warning') %}<small class="under st-t-{{ 'falha' if j.last_result == 'Failed' else 'alerta' }}">anterior: {{ j.last_result|res|lower }}</small>{% endif %}</td>
   <td class="c-name"><a href="/job?id={{ j.job_id|q }}">{{ j.name }}</a><small>{{ j.schedule }}</small></td>

@@ -69,6 +69,67 @@ def task_finished(t: dict) -> bool:
     return _result(t)[0] in ("Success", "Warning", "Failed") and parse_ts(t.get("endTime")) is not None
 
 
+def _run_info(run_t: list[dict]) -> dict | None:
+    """Andamento da tarefa em execução, como o Veeam informa (sem % por VM)."""
+    if not run_t:
+        return None
+    t = max(run_t, key=lambda x: parse_ts(x.get("creationTime")) or EPOCH)
+    p = t.get("progress") or {}
+    return {"duration": p.get("duration") or "", "processed": p.get("processedSize") or 0,
+            "rate": p.get("processingRate") or "", "bottleneck": p.get("bottleneck") or "",
+            "since": to_db(parse_ts(t.get("creationTime")))}
+
+
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _max_gap_days(days: list[str]) -> int | None:
+    idx = sorted({WEEKDAYS.index(d.lower()) for d in days or [] if d and d.lower() in WEEKDAYS})
+    if not idx:
+        return None
+    gaps = [(idx[(i + 1) % len(idx)] - idx[i]) % 7 or 7 for i in range(len(idx))]
+    return max(gaps)
+
+
+def expected_hours(job: dict, jobs_by_name: dict[str, dict], _seen: frozenset = frozenset()) -> tuple[float | None, str]:
+    """Intervalo máximo entre execuções segundo o agendamento do job no Veeam.
+    Retorna (horas, de onde veio). None = sem agendamento automático."""
+    s = job.get("schedule") or {}
+    if not s or not s.get("runAutomatically", False) or job.get("isDisabled"):
+        return None, ""
+    cands: list[tuple[float, str]] = []
+    d = s.get("daily") or {}
+    if d.get("isEnabled"):
+        kind = d.get("dailyKind") or ""
+        if kind == "Everyday":
+            cands.append((24.0, f"diário às {d.get('localTime', '?')}"))
+        else:
+            days = WEEKDAYS[:5] if kind == "WeekDays" else (d.get("days") or [])
+            gap = _max_gap_days(days)
+            if gap:
+                cands.append((gap * 24.0, f"dias {'úteis' if kind == 'WeekDays' else 'selecionados'} às {d.get('localTime', '?')}"))
+    p = s.get("periodically") or {}
+    if p.get("isEnabled") and p.get("frequency"):
+        f = float(p["frequency"])
+        h = f / 60 if p.get("periodicallyKind") == "Minutes" else f
+        cands.append((max(h, 1.0), f"a cada {p['frequency']} {'min' if p.get('periodicallyKind') == 'Minutes' else 'h'}"))
+    m = s.get("monthly") or {}
+    if m.get("isEnabled"):
+        cands.append((31 * 24.0, "mensal"))
+    if (s.get("continuously") or {}).get("isEnabled"):
+        cands.append((24.0, "contínuo"))
+    a = s.get("afterThisJob") or {}
+    if a.get("isEnabled") and a.get("jobName"):
+        parent = jobs_by_name.get(a["jobName"])
+        if parent and parent.get("id") not in _seen:
+            ph, psrc = expected_hours(parent, jobs_by_name, _seen | {job.get("id")})
+            if ph:
+                cands.append((ph, f"após \"{a['jobName']}\" ({psrc})"))
+    if not cands:
+        return None, ""
+    return min(cands, key=lambda c: c[0])
+
+
 def schedule_text(job: dict) -> tuple[str, bool]:
     """Descrição do agendamento como no console. Retorna (texto, agendado?)."""
     s = job.get("schedule") or {}
@@ -126,6 +187,7 @@ def analyze(*, jobs: list[dict], job_states: list[dict], sessions: list[dict],
     running_session_ids = running_session_ids or set()
 
     jobs_by_id = {j["id"]: j for j in jobs if j.get("id")}
+    jobs_by_name = {j.get("name"): j for j in jobs if j.get("name")}
     states_by_id = {s["id"]: s for s in job_states if s.get("id")}
     for jid in states_by_id.keys() - jobs_by_id.keys():
         warnings.append(f"Job '{states_by_id[jid].get('name')}' aparece em /jobs/states mas não em /jobs")
@@ -227,6 +289,7 @@ def analyze(*, jobs: list[dict], job_states: list[dict], sessions: list[dict],
         jname = job.get("name") or st.get("name") or jid
         disabled = bool(job.get("isDisabled")) or _lc(st.get("status")) == "disabled"
         sched, scheduled = schedule_text(job)
+        exp_h, exp_src = expected_hours(job, jobs_by_name) if job else (None, "")
         sess_list = job_sessions.get(jid, [])
         finished = [s for s in sess_list if _lc(s.get("state")) == FINISHED]
         finished.sort(key=lambda s: s_end(s) or EPOCH, reverse=True)
@@ -272,6 +335,7 @@ def analyze(*, jobs: list[dict], job_states: list[dict], sessions: list[dict],
             "job_id": jid, "name": jname, "type": job.get("type") or st.get("type") or "",
             "workload": st.get("workload") or "", "description": (job.get("description") or st.get("description") or "").strip(),
             "disabled": disabled, "schedule": sched, "scheduled": scheduled,
+            "expected_hours": exp_h, "expected_source": exp_src,
             "next_run": to_db(parse_ts(st.get("nextRun"))), "last_run": to_db(parse_ts(st.get("lastRun"))),
             "repository": st.get("repositoryName") or "", "objects_count_veeam": st.get("objectsCount"),
             "running": run_sess is not None,
@@ -313,11 +377,13 @@ def analyze(*, jobs: list[dict], job_states: list[dict], sessions: list[dict],
                 "name": display, "host": host, "job_id": jid, "job_name": jname, "backup_ids": bids,
                 "in_definition": in_def, "job_has_containers": bool(containers),
                 "excluded": n_lc in excluded, "job_disabled": disabled, "job_scheduled": scheduled,
+                "expected_hours": exp_h, "schedule_source": exp_src, "job_last_result": lf_res or None,
                 "size": (inc or {}).get("size") or "",
                 "last_result": res, "last_message": msg or "", "last_result_at": to_db(res_at),
                 "last_result_source": src, "last_result_session": sid,
                 "last_success_at": to_db(max((parse_ts(t.get("endTime")) for t in ok_t if t.get("endTime")), default=None)),
                 "running": bool(run_t),
+                "run_task": _run_info(run_t),
                 "job_running": run_sess is not None,
                 "job_running_since": to_db(parse_ts((run_sess or {}).get("creationTime"))) if run_sess else None,
                 "running_progress": (run_sess or {}).get("progressPercent") if run_sess else None,
@@ -361,7 +427,7 @@ def analyze(*, jobs: list[dict], job_states: list[dict], sessions: list[dict],
                 "job_disabled": False, "job_scheduled": True, "size": "",
                 "last_result": None, "last_message": "", "last_result_at": None,
                 "last_result_source": None, "last_result_session": None, "last_success_at": None,
-                "running": False, "job_running": False, "running_progress": None, "task_count": 0, "platform": platform,
+                "running": False, "run_task": None, "job_running": False, "running_progress": None, "task_count": 0, "platform": platform,
             }
             obj.update(rp_facts([bid], n_lc))
             objects.append(obj)

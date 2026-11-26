@@ -29,12 +29,13 @@
 {% endfor %}</tbody></table></div>
 {% elif not errs.repositories %}<p class="muted">Nenhum repositório retornado.</p>{% endif %}
 
-<h2>Servidores gerenciados</h2>
+<h2>Servidores cadastrados no Veeam</h2>
+<p class="small muted" style="margin-top:-4px">"Cadastro ativo" quer dizer que o servidor está registrado e habilitado no Veeam. Não é um teste de conexão: se um host cair, a falha aparece nas máquinas quando o job tentar usá-lo.</p>
 {% if errs.managed_servers %}<div class="flash erro">Não foi possível ler os servidores gerenciados: {{ errs.managed_servers }}</div>{% endif %}
 {% if infra.managed_servers %}
-<div class="tbl"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Status</th><th>Descrição</th></tr></thead>
+<div class="tbl"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Cadastro no Veeam</th><th>Descrição</th></tr></thead>
 <tbody>{% for m in infra.managed_servers|sort(attribute='name') %}
-<tr><td>{{ m.name }}</td><td>{{ m.viHostType or m.type }}</td><td>{% if m.status == 'Available' %}<span class="r-Success">Disponível</span>{% else %}<span class="r-Failed">{{ m.status }}</span>{% endif %}</td><td class="small muted">{{ '' if (m.description or '').startswith('Created by') else m.description }}</td></tr>
+<tr><td>{{ m.name }}</td><td>{{ m.viHostType or m.type }}</td><td>{% if m.status == 'Available' %}<span class="muted">Cadastro ativo</span>{% else %}<span class="r-Failed">Indisponível no Veeam ({{ m.status }})</span>{% endif %}</td><td class="small muted">{{ '' if (m.description or '').startswith('Created by') else m.description }}</td></tr>
 {% endfor %}</tbody></table></div>
 {% endif %}
 <p class="small muted">Estes dados são auxiliares: se não puderem ser lidos, o status dos backups no painel continua válido.</p>

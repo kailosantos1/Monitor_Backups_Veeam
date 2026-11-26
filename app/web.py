@@ -22,8 +22,7 @@ from .timeutil import fmt_age, fmt_local, from_db, now_utc, parse_ts, to_db
 from .views import KIND_LABEL, NO_CLIENT, Freshness, build_rows, resolve_client
 
 log = logging.getLogger("veeam.web")
-UI_LABEL = {"sem_backup": "Sem backup", "falha": "Falha", "alerta": "Alerta", "desativado": "Desativado",
-            "executando": "Em execução", "ok": "OK", "ignorado": "Ignorado"}
+from .status import UI_LABEL  # noqa: E402
 HERE = Path(__file__).resolve().parent
 
 
@@ -53,7 +52,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     tpl.env.filters.update(dt=lambda v, s=False: fmt_local(from_db(v) if isinstance(v, str) else v, s),
                            vdt=lambda v: fmt_local(parse_ts(v)), age=lambda v: fmt_age(from_db(v) if isinstance(v, str) else v),
                            q=lambda v: quote(str(v), safe=""), res=lambda v: RESULT_PT.get(v, v or "—"),
-                           duration=_duration)
+                           duration=_duration, runinfo=_runinfo, hours=_hours_txt)
     tpl.env.globals.update(LABELS=LABELS, KIND_LABEL=KIND_LABEL, settings=settings, UI=UI_LABEL)
     app.state.db, app.state.settings, app.state.scheduler = db, settings, scheduler
 
@@ -157,7 +156,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             raise HTTPException(404, "Objeto não encontrado no retrato atual do Veeam.")
         meta = db.object_meta().get(key)
         jm = db.job_meta().get(o.get("job_id") or "")
-        st = compute(o, meta, jm, now_utc(), settings.rpo_vm_hours, settings.rpo_agent_hours)
+        st = compute(o, meta, jm, now_utc(), settings.sem_backup_days, settings.agent_interval_hours)
         client, csrc = resolve_client(o, meta, jm, db.client_rules())
         name_lc = key.split(":", 2)[2]
         tasks = db.tasks_for(o["job_id"], name_lc) if key.startswith("job:") else []
@@ -425,6 +424,54 @@ def infra_alerts(infra: dict) -> list[str]:
     return out
 
 
+def _size(n) -> str:
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB", "MB") or n >= 100 else f"{n:.1f} {unit}".replace(".", ",")
+        n /= 1024
+    return ""
+
+
+def _hms(d: str) -> str:
+    """'09:48:28' ou '1.02:03:04' -> '9 h 48' / '26 h 03'."""
+    try:
+        days = 0
+        if "." in d.split(":")[0]:
+            dd, rest = d.split(".", 1)
+            days, d = int(dd), rest
+        h, m, _ = (int(x) for x in d.split(":"))
+        h += days * 24
+        return f"{h} h {m:02d}" if h else f"{m} min"
+    except (ValueError, AttributeError):
+        return d or ""
+
+
+def _hours_txt(h) -> str:
+    if not h:
+        return "—"
+    h = float(h)
+    if h < 48:
+        return f"{h:.0f} h"
+    d = h / 24
+    return f"{d:.0f} dias" if abs(d - round(d)) < 0.05 else f"{d:.1f} dias".replace(".", ",")
+
+
+def _runinfo(obj: dict) -> str:
+    """Texto de andamento da máquina no job em execução."""
+    rt = obj.get("run_task")
+    if obj.get("running") and rt:
+        if rt.get("processed"):
+            txt = f"{_size(rt['processed'])} lidos em {_hms(rt['duration'])}"
+            if rt.get("rate") and rt["rate"] != "N/A":
+                txt += f" · {rt['rate']}/s"
+            if rt.get("bottleneck") and rt["bottleneck"] not in ("NotDefined", "None"):
+                txt += f" · gargalo: {rt['bottleneck']}"
+            return txt
+        return f"Aguardando há {_hms(rt['duration'])}, nada lido ainda"
+    return "Na fila do job, ainda não começou"
+
+
 def _duration(sess: dict) -> str:
     a, b = parse_ts(sess.get("creationTime")), parse_ts(sess.get("endTime"))
     if not a:
@@ -451,7 +498,7 @@ def _parse_rpo(raw: str) -> float | None:
     try:
         v = float(raw)
     except ValueError:
-        raise HTTPException(400, "RPO inválido (informe horas, ex.: 36).")
+        raise HTTPException(400, "Intervalo inválido (informe horas, ex.: 24).")
     if v < 1 or v > 24 * 400:
-        raise HTTPException(400, "RPO deve estar entre 1 e 9600 horas.")
+        raise HTTPException(400, "O intervalo deve estar entre 1 e 9600 horas.")
     return v

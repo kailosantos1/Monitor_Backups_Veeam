@@ -9,7 +9,7 @@
 
 <div class="facts">
   <div><span>Último resultado</span><b>{% if job.last_result %}<span class="r-{{ job.last_result }}">{{ job.last_result|res }}</span> <small>{{ job.last_end|age }}</small>{% else %}—{% endif %}</b></div>
-  <div><span>Agendamento</span><b>{{ job.schedule }}</b></div>
+  <div><span>Agendamento</span><b>{{ job.schedule }}</b>{% if job.expected_hours and 'Após' in job.schedule %}<small style="display:block">na prática: {{ job.expected_source }}</small>{% endif %}</div>
   <div><span>Próxima execução</span><b>{{ job.next_run|dt if job.next_run else ('após o job anterior' if 'Após' in job.schedule else '—') }}</b></div>
   <div><span>Repositório</span><b>{{ job.repository or '—' }}</b></div>
 </div>
@@ -22,10 +22,11 @@
 <div class="grp open"><div class="gb"><table>
 <tbody>{% for r in rows %}
 <tr onclick="location.href='/objeto?key={{ r.key|q }}'">
-  <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando">{{ ic('loader','spin') }}Em execução</span>{% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ UI[r.status.code]|lower }}</small>{% endif %}{% else %}{{ badge(r.status.code, UI[r.status.code]) }}{% endif %}</td>
+  <td class="c-st">{% if r.status.active or r.status.code == 'executando' %}<span class="pill st-executando" title="Progresso do job no Veeam">{{ ic('loader','spin') }}Em execução{% if r.obj.running_progress is not none %} {{ r.obj.running_progress }}%{% endif %}</span>{% if r.status.is_problem %}<small class="under st-t-{{ r.status.code }}">{{ r.status.ui|lower }}</small>{% endif %}{% else %}{{ badge(r.status.code, r.status.ui) }}{% endif %}</td>
   <td class="c-name"><a href="/objeto?key={{ r.key|q }}">{{ r.obj.name }}</a><small>{{ r.obj.host }}{% if not r.obj.in_definition and not r.obj.job_has_containers %} · fora da definição do job{% endif %}</small></td>
-  <td class="c-when">{% if r.obj.last_rp_at %}{{ r.obj.last_rp_at|age }}<small>{{ r.obj.last_rp_at|dt }}</small>{% else %}<b class="none">nunca</b>{% endif %}</td>
-  <td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>
+  {% set lb = r.obj.last_rp_at %}<td class="c-when last">{% if lb %}Último backup {{ lb|age }}<small>{{ lb|dt }}</small>{% else %}<b class="none">Nunca teve backup</b>{% endif %}</td>
+  {% if r.status.active or r.status.code == 'executando' %}{% set ri = r.obj|runinfo %}<td class="c-why run" title="{{ ri }}">{{ ri }}</td>
+          {% else %}<td class="c-why" title="{{ r.status.summary }}">{{ r.status.summary if r.status.code != 'ok' }}</td>{% endif %}
 </tr>
 {% endfor %}</tbody></table></div></div>
 
@@ -46,11 +47,11 @@
 
 {% if user.role == 'admin' %}
 <details class="edit" style="margin-top:20px"{{ ' open' if jm.client or jm.rpo_hours }}>
-  <summary>Editar cliente ou RPO deste job</summary>
+  <summary>Editar cliente ou intervalo deste job</summary>
   <form method="post" action="/job/meta" class="box"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="job_id" value="{{ job.job_id }}">
   <dl class="kv" style="align-items:start">
     <dt>Cliente</dt><dd><input name="client" value="{{ jm.client or '' }}" placeholder="automático pelas regras"></dd>
-    <dt>RPO (horas)</dt><dd><input name="rpo_hours" value="{{ jm.rpo_hours or '' }}" size="6" placeholder="{{ settings.rpo_vm_hours|round|int }}"> <span class="small muted">idade máxima do último ponto para todas as máquinas deste job</span></dd>
+    <dt>Intervalo (horas)</dt><dd><input name="rpo_hours" value="{{ jm.rpo_hours or '' }}" size="6" placeholder="{{ job.expected_hours|round|int if job.expected_hours else '' }}"> <span class="small muted">só preencha se o agendamento do Veeam não servir (vale para todas as máquinas do job)</span></dd>
   </dl><p style="margin-bottom:0"><button>Salvar</button></p></form>
 </details>
 {% endif %}
