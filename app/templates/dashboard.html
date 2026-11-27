@@ -2,7 +2,7 @@
 {% from "_icons.html" import ic, badge %}
 {% block autorefresh %}1{% endblock %}
 {% block content %}
-{% set n_ok = counts.get('ok', 0) %}{% set n_run = rows|selectattr('status.active')|list|length + counts.get('executando', 0) %}{% set n_ign = counts.get('ignorado', 0) %}
+{% set n_ok = counts.get('ok', 0) %}{% set n_run = rows|selectattr('status.running')|list|length %}{% set n_ign = counts.get('ignorado', 0) %}
 
 <div class="hero">
   {% if problems %}
@@ -38,7 +38,7 @@
     <div class="gh">
       <span class="chev">{{ ic('chevron') }}</span>
       <h3>{{ client }}</h3>
-      {% set nrun = sections[client]|map(attribute='rows')|sum(start=[])|selectattr('status.active')|list|length + bc['executando'] %}
+      {% set nrun = sections[client]|map(attribute='rows')|sum(start=[])|selectattr('status.running')|list|length %}
       <span class="gcount">{% if nrun %}<span class="run">{{ ic('loader','spin') }} {{ nrun }} em execução</span> · {% endif %}{% if nprob %}<b>{{ nprob }}</b> de {{ bc.values()|sum }} com problema{% elif bc['ok'] %}{{ bc['ok'] }} em dia{% else %}{{ bc.values()|sum }} {{ 'máquina' if bc.values()|sum == 1 else 'máquinas' }}{% endif %}</span>
     </div>
     <div class="gb">

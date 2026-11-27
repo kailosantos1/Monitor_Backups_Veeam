@@ -65,6 +65,12 @@ class Status:
     never: bool = False                   # não existe nenhum ponto de restauração
 
     @property
+    def running(self) -> bool:
+        """Em execução agora (processando ou na fila do job). Use isto para
+        contar: `active` e o código 'executando' se sobrepõem."""
+        return self.active or self.code == "executando"
+
+    @property
     def label(self) -> str:
         return NEVER_LABEL.upper() if self.never and self.code == "sem_backup" else LABELS[self.code]
 

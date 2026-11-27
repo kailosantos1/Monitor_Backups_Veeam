@@ -7,10 +7,17 @@
     const tabs = [...document.querySelectorAll("#f-status button")];
     const q = document.getElementById("f-q"), cl = document.getElementById("f-client");
     let status = new URLSearchParams(location.search).get("status") || "todos";
-    // Clientes abertos sobrevivem à atualização automática da página.
+    // Clientes abertos sobrevivem só à atualização automática (reload). Ao
+    // chegar de outra página ou pelo botão Voltar, tudo começa fechado.
     let manual = {};
-    try { manual = JSON.parse(sessionStorage.getItem("abertos") || "{}"); } catch (e) {}
     const save = () => { try { sessionStorage.setItem("abertos", JSON.stringify(manual)); } catch (e) {} };
+    let navType = "navigate";
+    try { navType = performance.getEntriesByType("navigation")[0].type; } catch (e) {}
+    if (navType === "reload") {
+      try { manual = JSON.parse(sessionStorage.getItem("abertos") || "{}"); } catch (e) {}
+    } else {
+      save();
+    }
 
     function apply() {
       const text = q.value.trim().toLowerCase(), vis = {};
@@ -33,9 +40,16 @@
       tabs.forEach(t => t.classList.toggle("on", t.dataset.filter === status));
       const u = new URL(location); u.searchParams.set("status", status); history.replaceState(null, "", u);
     }
-    tabs.forEach(t => t.addEventListener("click", () => { status = t.dataset.filter; apply(); }));
+    // Trocar de aba fecha todos os clientes.
+    tabs.forEach(t => t.addEventListener("click", () => {
+      if (t.dataset.filter !== status) { manual = {}; save(); }
+      status = t.dataset.filter; apply();
+    }));
     [q, cl].forEach(e => e.addEventListener("input", apply));
     groups.forEach(g => g.querySelector(".gh").addEventListener("click", () => { manual[g.dataset.client] = !g.classList.contains("open"); save(); apply(); }));
+    // Voltar restaurado do cache do navegador (bfcache) não recarrega o script:
+    // fecha tudo aqui.
+    window.addEventListener("pageshow", e => { if (e.persisted) { manual = {}; save(); apply(); } });
     apply();
   }
   if (document.body.dataset.autorefresh === "1") {
