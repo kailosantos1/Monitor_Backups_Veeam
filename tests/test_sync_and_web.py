@@ -164,6 +164,79 @@ def test_pagination_mismatch_raises(monkeypatch):
         _client(items, 9).get_all("/api/v1/x")
 
 
+class LiveSession(FakeSession):
+    """Uma sessão nova é criada logo após a 1ª página de cada passada (lista viva)."""
+
+    def get(self, url, params=None, **kw):
+        self.calls += 1
+        s, l = params["skip"], params["limit"]
+        asc = params.get("orderAsc") == "true"
+        view = self.items if asc else list(reversed(self.items))
+        resp = FakeResp({"data": view[s:s + l], "pagination": {"total": len(self.items)}})
+        if s == 0:
+            self.items.append({"id": f"novo{len(self.items)}"})
+        return resp
+
+
+def test_live_list_descending_recovers_with_single_request(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    c = _client([], 0)
+    c._s = LiveSession([{"id": str(i)} for i in range(5)], None)
+    assert len(c.get_all("/api/v1/sessions")) >= 5
+
+
+class UnstableSortSession(FakeSession):
+    """Total estável, mas a fronteira entre páginas repete um item e perde outro
+    (empate no campo de ordenação). Numa página só vem tudo certo."""
+
+    def get(self, url, params=None, **kw):
+        self.calls += 1
+        s, l = params["skip"], params["limit"]
+        n = len(self.items)
+        if l >= n:
+            data = self.items
+        else:
+            view = self.items[:]
+            if s > 0:  # páginas seguintes enxergam a ordem dos empatados trocada
+                view[s - 1], view[s] = view[s], view[s - 1]
+            data = view[s:s + l]
+        return FakeResp({"data": data, "pagination": {"total": n}})
+
+
+def test_unstable_sort_recovers_with_single_request(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    c = _client([], 0)
+    c._s = UnstableSortSession([{"id": str(i)} for i in range(7)], None)
+    got = c.get_all("/api/v1/sessions")
+    assert sorted(it["id"] for it in got) == [str(i) for i in range(7)]
+
+
+def test_server_side_duplicate_is_deduplicated(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    items = [{"id": str(i)} for i in range(6)] + [{"id": "3"}]  # Veeam repete o "3"
+    got = _client(items, 7).get_all("/api/v1/sessions")
+    assert sorted(it["id"] for it in got) == [str(i) for i in range(6)]
+
+
+def test_unstable_sort_capped_server_still_raises(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    c = _client([], 0)
+    sess = UnstableSortSession([{"id": str(i)} for i in range(7)], None)
+    orig = sess.get
+    sess.get = lambda url, params=None, **kw: orig(url, {**params, "limit": min(params["limit"], 2)})
+    c._s = sess
+    with pytest.raises(IncompleteDataError) as e:
+        c.get_all("/api/v1/sessions")
+    assert "repetido" in str(e.value)
+
+
+def test_live_list_ascending_closes():
+    c = _client([], 0)
+    c._s = LiveSession([{"id": str(i)} for i in range(5)], None)
+    got = c.get_all("/api/v1/sessions", {"orderColumn": "CreationTime", "orderAsc": "true"})
+    assert len(got) == 6
+
+
 def test_http_error_is_explicit():
     c = _client([], 0)
     c._s.get = lambda url, **kw: FakeResp({"error": "boom"}, 500)

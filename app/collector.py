@@ -54,11 +54,16 @@ def collect(source, history_days: int, now: datetime | None = None) -> RawData:
     """`source` é um VeeamClient ou ReplaySource. Levanta VeeamError em falha essencial."""
     now = now or datetime.now(timezone.utc)
     since = _iso(now - timedelta(days=history_days))
+    # Sessões são uma lista viva. A ordem padrão do Veeam é da mais nova para
+    # a mais antiga: uma sessão criada durante a paginação desloca tudo uma
+    # posição (um item se repete, outro some). Em ordem crescente de criação,
+    # itens novos entram no fim e a própria paginação os alcança.
+    live = {"createdAfterFilter": since, "orderColumn": "CreationTime", "orderAsc": "true"}
 
     source.login()
     jobs = source.get_all("/api/v1/jobs")
     job_states = source.get_all("/api/v1/jobs/states")
-    sessions = source.get_all("/api/v1/sessions", {"createdAfterFilter": since})
+    sessions = source.get_all("/api/v1/sessions", live)
     backups = source.get_all("/api/v1/backups")
     backup_objects = source.get_all("/api/v1/backupObjects")
     restore_points = source.get_all("/api/v1/restorePoints")
@@ -67,7 +72,7 @@ def collect(source, history_days: int, now: datetime | None = None) -> RawData:
     # versão do Veeam não tiver, buscamos sessão a sessão. Qualquer sessão
     # que falhe derruba a coleta: resultado por VM incompleto não serve.
     try:
-        tasks = source.get_all("/api/v1/taskSessions", {"createdAfterFilter": since})
+        tasks = source.get_all("/api/v1/taskSessions", live)
         task_source = "global"
     except EndpointNotFound:
         log.info("/api/v1/taskSessions indisponível; buscando por sessão")

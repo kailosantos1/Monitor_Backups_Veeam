@@ -154,22 +154,65 @@ class VeeamClient:
         """Lista paginada completa e conferida. Ver docstring do módulo."""
         last_problem = ""
         for attempt in range(1, 4):
-            items, total = self._page_through(path, params)
+            items, total, first_total = self._page_through(path, params)
             unique: dict[str, dict] = {}
             no_id: list[dict] = []
+            dupes = 0
             for it in items:
                 iid = it.get("id") if isinstance(it, dict) else None
                 if iid:
+                    if iid in unique:
+                        dupes += 1
                     unique[iid] = it
                 else:
                     no_id.append(it)
             result = list(unique.values()) + no_id
             if total is None or len(result) == total:
                 return result
-            last_problem = f"recebidos {len(result)} itens únicos, Veeam informou total={total}"
+            if dupes and total:
+                # Ordenação instável (empates no campo de ordem) faz um item
+                # se repetir na fronteira entre páginas e outro sumir. Sem
+                # fronteira não há o problema: pede tudo numa página só.
+                single = self._single_page(path, params, total)
+                if single is not None:
+                    return single
+            last_problem = (f"recebidos {len(result)} itens únicos, Veeam informou total={total}"
+                            f"; {dupes} repetido(s) entre páginas; total na 1ª página={first_total}")
             log.warning("%s: %s (tentativa %d/3)", path, last_problem, attempt)
             time.sleep(2 * attempt)
         raise IncompleteDataError(f"{path}: paginação não fechou após 3 tentativas ({last_problem})")
+
+    def _single_page(self, path: str, params: dict[str, Any] | None, total: int) -> list[dict] | None:
+        """Busca a lista inteira numa requisição. None se não fechar com o total."""
+        q = dict(params or {})
+        q["skip"] = 0
+        q["limit"] = total + 50  # folga para itens criados agora
+        body = self._get(path, q)
+        if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+            return None
+        data = body["data"]
+        new_total = (body.get("pagination") or {}).get("total")
+        if isinstance(new_total, int) and len(data) == new_total:
+            # Sem fronteira de página, repetição só pode vir do próprio Veeam
+            # (visto em sessões "Configuration Database Resynchronize"): o
+            # total conta a cópia. Remove a cópia e avisa.
+            unique: dict[str, dict] = {}
+            no_id: list[dict] = []
+            for it in data:
+                iid = it.get("id") if isinstance(it, dict) else None
+                if iid:
+                    if iid in unique:
+                        log.warning("%s: Veeam devolveu o id %s duplicado (%s); mantida uma cópia",
+                                    path, iid, it.get("name"))
+                    unique[iid] = it
+                else:
+                    no_id.append(it)
+            log.info("%s: lista completa obtida em uma requisição (%d itens, %d únicos)",
+                     path, len(data), len(unique) + len(no_id))
+            return list(unique.values()) + no_id
+        log.warning("%s: requisição única trouxe %d de total=%s (limite do servidor?)",
+                    path, len(data), new_total)
+        return None
 
     def get_unpaged(self, path: str) -> list[dict]:
         """Para endpoints sem parâmetros de paginação (ex.: /sessions/{id}/taskSessions)."""
@@ -184,27 +227,31 @@ class VeeamClient:
             raise IncompleteDataError(f"{path}: veio {len(data)} de {total} itens")
         return data
 
-    def _page_through(self, path: str, params: dict[str, Any] | None) -> tuple[list[dict], int | None]:
+    def _page_through(self, path: str, params: dict[str, Any] | None
+                      ) -> tuple[list[dict], int | None, int | None]:
         out: list[dict] = []
         skip = 0
         total: int | None = None
+        first_total: int | None = None
         for _ in range(100000):
             q = dict(params or {})
             q["skip"] = skip
             q["limit"] = self.page_size
             body = self._get(path, q)
             if isinstance(body, list):  # endpoint sem paginação
-                return body, len(body)
+                return body, len(body), len(body)
             if not isinstance(body, dict) or not isinstance(body.get("data"), list):
                 raise VeeamError(f"{path}: formato inesperado (sem campo 'data')")
             page = body["data"]
             pag = body.get("pagination") or {}
             if isinstance(pag.get("total"), int):
                 total = pag["total"]
+                if first_total is None:
+                    first_total = total
             out.extend(page)
             skip += len(page)
             if not page or len(page) < self.page_size or (total is not None and skip >= total):
-                return out, total
+                return out, total, first_total
         raise VeeamError(f"{path}: paginação não terminou")
 
 
